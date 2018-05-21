@@ -25,9 +25,18 @@ const char ok[] PROGMEM = "OK!";
 
 // Read vcc
 float readVccCalibrated(){
-  float vcc = (ESP.getVcc() >> 10);
-  // vcc = vcc / 1024;
+  uint32 vcc = ESP.getVcc();
+  //vcc = vcc / 1024;
   return vcc;
+}
+
+char* addDecPointAtPosAndConvertToCharArray(int in, int pos, char* buff){
+  sprintf(buff, "%d", in);
+  int n = sizeof(in);
+  for (int c = n - 1; c >= pos-1; c--){
+   buff[c+1] = buff[c];
+ }
+ buff[pos-1] = '.';
 }
 
 
@@ -46,7 +55,7 @@ WiFiEventHandler wifiDisconnectHandler;
 // Function to send MQTT messages - returns number of sent messages if successful - otherwise returns 0
 uint8_t publishTempHumVccToMQTT(){
   char cBuff[6] = {0};
-  Serial.print(F("Sending..."));
+  Serial.println(F("Sending..."));
   // mqttClient.publish("INSIDE", 1, true, "PUB");
   // Publish temperature
   //Serial.print(" Tmp.: ");
@@ -59,7 +68,7 @@ uint8_t publishTempHumVccToMQTT(){
     return 0;
   }
   // Publish humidity
-  cBuff[5] = 0;
+  //cBuff[5] = 0;
   //Serial.print(" Hum.: ");
   //Serial.print(hum);
   dtostrf(hum,5,2,cBuff);
@@ -72,7 +81,17 @@ uint8_t publishTempHumVccToMQTT(){
   // Publish voltage
   // Serial.print(" VCC: ");
   // Serial.print(readVccCalibrated());
-  dtostrf(readVccCalibrated(),5,2,cBuff);
+  //dtostrf(readVccCalibrated(),5,2,cBuff);
+  int vcc = ESP.getVcc();
+  #ifdef _DEBUG
+  Serial.println(vcc);
+  #endif
+  vcc = vcc * 1006 / 1024;
+  #ifdef _DEBUG
+  Serial.println(vcc);
+  #endif
+  addDecPointAtPosAndConvertToCharArray(vcc,2,cBuff);
+
   // itoa(getVcc(),cBuff,10);
   if(mqttClient.publish(F_VCC, 1, true, cBuff)) {
     packetsFiredAndNotArrived++;
@@ -92,6 +111,9 @@ uint8_t publishTempHumVccToMQTT(){
     return 0;
   }
   //Serial.println("");
+  #ifdef _DEBUG
+  Serial.println(packetsFiredAndNotArrived);
+  #endif
   return packetsFiredAndNotArrived;
 }
 
@@ -175,9 +197,11 @@ void saveConfigCallback() {
 
 
 void setup() {
-  t1 = millis();
-    // Serial.begin(74880);
-  //Serial.println(F("Booting..."));
+  //t1 = millis();
+  #ifdef _DEBUG
+  Serial.begin(74880);
+  Serial.println(F("Booting..."));
+  #endif
 
   //Serial.printf("Flash size: %d Bytes \n", ESP.getFlashChipRealSize());
   pinMode(SENSOR_PWR, OUTPUT);
@@ -225,7 +249,7 @@ void setup() {
 void loop() {
   hum = HTUSensor.readHumidity();
   temp = HTUSensor.readTemperature();
-  //Serial.printf("hum[%f] | temp[%f] | vcc[%f]: ", hum, temp, readVccCalibrated());
+  //Serial.printf("hum[%f] | temp[%f] | vcc[%i]: ", hum, temp, ESP.getVcc());
   if (MqttIsConnected){
     //mqttClient.publish("INSIDE", 1, true, "LOOP");
     if (publishTempHumVccToMQTT()){
