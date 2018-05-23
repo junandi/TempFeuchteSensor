@@ -2,8 +2,10 @@
 #include "credentials.h"
 
 #define SLEEP_TIME 300e6 // = 300 seconds = 5 minutes
-#define VCC_CALIB_FACTOR 969
+#define VCC_CALIB_FACTOR 1006 // equals 1006/1024
 #define SENSOR_PWR 4
+
+#define TIME_TO_WAIT 1000 // time in ms before retry
 
 ADC_MODE(ADC_VCC); // to be able to use ESP.getVcc()
 
@@ -13,15 +15,38 @@ uint8_t SCL_PIN = 13;
 uint8_t MAX_RETRIES = 3;
 uint8_t buffer[5];
 //uint8_t error = 0;
-uint8_t packetsFiredAndNotArrived = 0;
+uint8_t packetsFiredAndNotArrived;
+bool lastMessageIsSent = false;
+bool readyToSleep = false;
 float hum, temp = 0.0;
 bool MqttIsConnected = false;
 //bool EverythingIsSent = false;
 uint8_t retries = 0;
 time_t t1 = 0;
 
-const char fail[] PROGMEM = "Fehler!";
-const char ok[] PROGMEM = "OK!";
+//Ticker tick;
+
+#ifdef _DEBUG
+  int cyclBuff;
+  int indexCycle;
+  const char fail[] PROGMEM = "Fehler!";
+  const char ok[] PROGMEM = "OK!";
+  void startPoint(){
+    indexCycle++;
+    Serial.print(indexCycle);
+    Serial.print(". cycl.: ");
+    cyclBuff = ESP.getCycleCount();
+  }
+
+  void endPoint(){
+    cyclBuff = ESP.getCycleCount() - cyclBuff;
+    Serial.print(cyclBuff);
+    Serial.println(" cycles");
+  }
+#else
+void startPoint(){}
+void endPoint(){}
+#endif
 
 // Read vcc
 float readVccCalibrated(){
@@ -39,11 +64,18 @@ char* addDecPointAtPosAndConvertToCharArray(int in, int pos, char* buff){
  buff[pos-1] = '.';
 }
 
+char* DivideIntBy1000AndConvertToString(int in, char* buff){
+  sprintf(buff, "%d", in);
+  int n = sizeof(in);
+  for (int c = n - 1; c >= n - 3 ; c--){
+   buff[c+1] = buff[c];
+ }
+ buff[n-3] = '.';
+}
 
 #ifdef HTU_TYP
 HTU21D HTUSensor;
 #endif
-
 
 #ifdef ASYNCMQTT
 AsyncMqttClient mqttClient;
@@ -55,12 +87,16 @@ WiFiEventHandler wifiDisconnectHandler;
 // Function to send MQTT messages - returns number of sent messages if successful - otherwise returns 0
 uint8_t publishTempHumVccToMQTT(){
   char cBuff[6] = {0};
+  #ifdef _DEBUG
   Serial.println(F("Sending..."));
+  #endif
   // mqttClient.publish("INSIDE", 1, true, "PUB");
   // Publish temperature
   //Serial.print(" Tmp.: ");
   //Serial.print(temp);
+  startPoint();
   dtostrf(temp,5,2,cBuff);
+  endPoint();
   if(mqttClient.publish(F_TEMP, 1, true, cBuff)) {
     packetsFiredAndNotArrived++;
   }
@@ -71,7 +107,9 @@ uint8_t publishTempHumVccToMQTT(){
   //cBuff[5] = 0;
   //Serial.print(" Hum.: ");
   //Serial.print(hum);
+  startPoint();
   dtostrf(hum,5,2,cBuff);
+  endPoint();
   if(mqttClient.publish(F_HUM, 1, true, cBuff)) {
     packetsFiredAndNotArrived++;
   }
@@ -83,16 +121,39 @@ uint8_t publishTempHumVccToMQTT(){
   // Serial.print(readVccCalibrated());
   //dtostrf(readVccCalibrated(),5,2,cBuff);
   int vcc = ESP.getVcc();
-  #ifdef _DEBUG
-  Serial.println(vcc);
-  #endif
-  vcc = vcc * 1006 / 1024;
-  #ifdef _DEBUG
-  Serial.println(vcc);
-  #endif
-  addDecPointAtPosAndConvertToCharArray(vcc,2,cBuff);
+  vcc = vcc * VCC_CALIB_FACTOR / 1024;
 
-  // itoa(getVcc(),cBuff,10);
+  #ifdef USE_DTOSTRF
+  #ifdef _DEBUG
+  Serial.print("dtostrf: ");
+  #endif
+  startPoint();
+  float f_vcc = vcc;
+  f_vcc = f_vcc/1000;
+  dtostrf(f_vcc,4,2,cBuff);
+  endPoint();
+  #endif
+
+  // #ifdef _DEBUG
+  // Serial.print("own1: ");
+  // #endif
+  // startPoint();
+  // addDecPointAtPosAndConvertToCharArray(vcc,2,cBuff);
+  // endPoint();
+  // #ifdef _DEBUG
+  // Serial.println(cBuff);
+  // #endif
+
+  #ifdef _DEBUG
+  Serial.print("own2: ");
+  #endif
+  startPoint();
+  DivideIntBy1000AndConvertToString(vcc,cBuff);
+  endPoint();
+  #ifdef _DEBUG
+  Serial.println(cBuff);
+  #endif
+
   if(mqttClient.publish(F_VCC, 1, true, cBuff)) {
     packetsFiredAndNotArrived++;
   }
@@ -101,9 +162,11 @@ uint8_t publishTempHumVccToMQTT(){
   }
   // Publish time
   //Serial.print(" TIME: ");
-  time_t timer_val = millis()-t1;
+  //time_t timer_val = millis();
   //Serial.print(timer_val);
-  itoa(timer_val,cBuff,10);
+  startPoint();
+  itoa(millis(),cBuff,10);
+  endPoint();
   if(mqttClient.publish(F_TIME, 1, true, cBuff)) {
     packetsFiredAndNotArrived++;
   }
@@ -111,11 +174,9 @@ uint8_t publishTempHumVccToMQTT(){
     return 0;
   }
   //Serial.println("");
-  #ifdef _DEBUG
-  Serial.println(packetsFiredAndNotArrived);
-  #endif
   return packetsFiredAndNotArrived;
 }
+
 
 // void handleMqttMessage(char* topic, char* payload, size_t len){
 //   if (strcmp(topic,USER PREAMBLE F_TIMER) == 0){
@@ -176,15 +237,16 @@ void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
 //
 // }
 void onMqttPublish(uint16_t packetId) {
-  //Serial.println(F("Publish acknowledged."));
+  Serial.println(F("Publish ack."));
   packetsFiredAndNotArrived--;
-  if (packetsFiredAndNotArrived == 0){
-    // going to sleep if all messages arrived
-    ESP.deepSleep(SLEEP_TIME, WAKE_RF_DEFAULT);
+  if(lastMessageIsSent && packetsFiredAndNotArrived == 0){
+    readyToSleep = true;
+    #ifdef _DEBUG
+    Serial.println("OK!");
+    #endif
   }
 }
 #endif
-
 
 #ifdef WIFIMANAGER
 bool shouldSaveConfig = false;
@@ -244,27 +306,51 @@ void setup() {
   IPAddress ip = WiFi.localIP();
   //Serial.println(ip);
   #endif
+
+  hum = HTUSensor.readHumidity();
+  temp = HTUSensor.readTemperature();
 }
 
 void loop() {
-  hum = HTUSensor.readHumidity();
-  temp = HTUSensor.readTemperature();
-  //Serial.printf("hum[%f] | temp[%f] | vcc[%i]: ", hum, temp, ESP.getVcc());
-  if (MqttIsConnected){
+
+  if (MqttIsConnected && !lastMessageIsSent){
+    #ifdef _DEBUG
+    Serial.printf("hum[%f] | temp[%f] | vcc[%i]", hum, temp, ESP.getVcc());
+    Serial.println("");
+    #endif
+    packetsFiredAndNotArrived = 0;
     //mqttClient.publish("INSIDE", 1, true, "LOOP");
-    if (publishTempHumVccToMQTT()){
-      //Serial.println(millis()-t1);
-      delay(1000);
-      ESP.deepSleep(SLEEP_TIME, WAKE_RF_DEFAULT);
-    }
-    else if (retries < MAX_RETRIES){
+    publishTempHumVccToMQTT();
+    lastMessageIsSent = true;
+    #ifdef _DEBUG
+    Serial.print(packetsFiredAndNotArrived);
+    Serial.print(" ");
+    Serial.println("messages are sent...");
+    #endif
+    t1 = millis();
+  }
+  if(lastMessageIsSent && (millis()-t1 > TIME_TO_WAIT)){
+    if (retries < MAX_RETRIES){
+      lastMessageIsSent = false;
       retries ++;
-      //Serial.println("let's try again...");
+      #ifdef _DEBUG
+      Serial.println("let's try again...");
+      #endif
     }
     else{
-      //Serial.println("no success... maybe next time...");
-      ESP.deepSleep(SLEEP_TIME, WAKE_RF_DEFAULT);
+      #ifdef _DEBUG
+      Serial.println("no success... maybe next time...");
+      #endif
+      readyToSleep = true;
     }
+  }
+  if (readyToSleep){
+    // going to sleep if all messages arrived
+    #ifdef _DEBUG
+    Serial.println(millis()-t1);
+    Serial.println("let's rest...");
+    #endif
+    ESP.deepSleep(SLEEP_TIME, WAKE_RF_DEFAULT);
   }
   //uint16_t packetIdPub2 = mqttClient.publish(USER PREAMBLE F_STATE, 1, true, "alive!");
   // put your main code here, to run repeatedly:

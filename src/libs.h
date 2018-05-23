@@ -1,12 +1,12 @@
 #ifndef LIBS_H
 #define LIBS_H
 
-
-#define _DEBUG
+//#define _DEBUG
 
 #define WIFIMANAGER
 #define ASYNCMQTT
 #define HTU_TYP
+
 //#define OTA
 
 //#include <Arduino.h>
